@@ -45,7 +45,7 @@ mmrotate
 The original images will be cropped to 800\*800 patches with the stride of 150.
 
 ```shell
-python tools/data/sodaa/sodaa_split.py --sodaa_train.json 
+python tools/data/sodaa/sodaa_split.py --base-json sodaa_train.json 
 ```
 
 This script is forded from [BboxToolkit](https://github.com/jbwang1997/BboxToolkit), more details please refer to the project page.
