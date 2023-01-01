@@ -1,0 +1,28 @@
+{
+  "nproc": 10,
+  "img_dirs": [
+    "path to images"
+  ],
+  "ann_dirs": [
+    "path to annotations"
+  ],
+  "sizes": [
+    800
+  ],
+  "gaps": [
+    150
+  ],
+  "rates": [
+    1.0
+  ],
+  "img_rate_thr": 0.6,
+  "iof_thr": 0.7,
+  "no_padding": false,
+  "padding_value": [
+    104,
+    116,
+    124
+  ],
+  "save_dir": "path to save",
+  "save_ext": ".jpg"
+}
