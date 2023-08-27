@@ -15,9 +15,9 @@ If you use our benchmark in your research, please cite this project.
 ```bibtex
 @article{SODA,
   title={Towards large-scale small object detection: Survey and benchmarks},
-  author={Cheng, Gong and Yuan, Xiang and Yao, Xiwen and Yan, Kebing and Zeng, Qinghua and Han, Junwei},
-  journal={arXiv preprint arXiv:2207.14096},
-  year={2022}
+  author={Cheng, Gong and Yuan, Xiang and Yao, Xiwen and Yan, Kebing and Zeng, Qinghua and Xie, Xingxing and Han, Junwei},
+  journal={TPAMI},
+  year={2023}
 }
 ```
 
