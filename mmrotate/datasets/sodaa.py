@@ -35,10 +35,10 @@ class SODAADataset(CustomDataset):
                'ship', 'container', 'storage-tank', 'swimming-pool',
                'windmill')  # only foreground categories available
     def __init__(self,
-                 version,
                  ori_ann_file,
+                 angle_version = 'le90',
                  **kwargs):
-        self.version = version
+        self.angle_version = angle_version
         super(SODAADataset, self).__init__(**kwargs)
         # self.ori_infos = self.load_ori_annotations(ori_ann_file)
         self.ori_data_infos = self.load_ori_annotations(ori_ann_file)
@@ -83,7 +83,7 @@ class SODAADataset(CustomDataset):
                 if len(poly) > 8:
                     continue    # neglect those objects annotated with more than 8 polygons
                 try:
-                    x, y, w, h, a = poly2obb_np(poly, self.version)
+                    x, y, w, h, a = poly2obb_np(poly, self.angle_version)
                 except:  # noqa: E722
                     continue
                 label = int(ann['category_id'])  # 0-index
@@ -167,7 +167,7 @@ class SODAADataset(CustomDataset):
             for ann in annotations:
                 poly = np.array(ann['poly'], dtype=np.float32)
                 try:
-                    x, y, w, h, a = poly2obb_np(poly, self.version)
+                    x, y, w, h, a = poly2obb_np(poly, self.angle_version)
                 except:  # noqa: E722
                     continue
                 label = int(ann['cat_id'])  # 0-index
