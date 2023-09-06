@@ -33,6 +33,7 @@ data = dict(
     workers_per_gpu=2,
     train=dict(
         type=dataset_type,
+        angle_version = 'le90',
         ann_file=data_root + 'divData/train/Annotations/',
         img_prefix=data_root + 'divData/train/Images/',
         pipeline=train_pipeline,
@@ -40,6 +41,7 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
+        angle_version = 'le90',
         ann_file=data_root + 'divData/val/Annotations/',
         img_prefix=data_root + 'divData/val/Images/',
         pipeline=test_pipeline,
@@ -47,6 +49,7 @@ data = dict(
     ),
     test=dict(
         type=dataset_type,
+        angle_version = 'le90',
         ann_file=data_root + 'divData/test/Annotations/',
         img_prefix=data_root + 'divData/test/Images/',
         pipeline=test_pipeline,
