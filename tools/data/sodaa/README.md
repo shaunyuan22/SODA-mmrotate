@@ -6,7 +6,7 @@
 @article{cheng2022towards,
   title={Towards large-scale small object detection: Survey and benchmarks},
   author={Cheng, Gong and Yuan, Xiang and Yao, Xiwen and Yan, Kebing and Zeng, Qinghua and Han, Junwei},
-  journal={arXiv preprint arXiv:2207.14096},
+  journal={TPAMI},
   year={2022}
 }
 ```
