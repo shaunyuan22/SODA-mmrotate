@@ -596,12 +596,6 @@ class SODAAeval:
                 mean_s = -1
             else:
                 mean_s = np.mean(s[s > -1])
-            txtPth = "./work_dirs/evalRes.txt"
-            txtFile = open(txtPth, 'a+')
-            txtFile.writelines(iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets,
-                                           mean_s))
-            txtFile.writelines('\n')
-            txtFile.close()
             print(
                 iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets,
                             mean_s))
