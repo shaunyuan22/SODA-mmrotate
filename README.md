@@ -13,12 +13,16 @@ If you use our benchmark in your research, please cite this project.
 
 
 ```bibtex
-@article{SODA,
-  title={Towards large-scale small object detection: Survey and benchmarks},
+@ARTICLE{SODA,
   author={Cheng, Gong and Yuan, Xiang and Yao, Xiwen and Yan, Kebing and Zeng, Qinghua and Xie, Xingxing and Han, Junwei},
-  journal={TPAMI},
-  year={2023}
+  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
+  title={Towards Large-Scale Small Object Detection: Survey and Benchmarks}, 
+  year={2023},
+  volume={45},
+  number={11},
+  pages={13467-13488}
 }
+
 ```
 
 ```bibtex
