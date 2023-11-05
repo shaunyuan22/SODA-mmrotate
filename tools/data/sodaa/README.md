@@ -1,18 +1,6 @@
 # Preparing SODA-A Dataset
 
-<!-- [DATASET] -->
-
-```bibtex
-@article{cheng2022towards,
-  title={Towards large-scale small object detection: Survey and benchmarks},
-  author={Cheng, Gong and Yuan, Xiang and Yao, Xiwen and Yan, Kebing and Zeng, Qinghua and Han, Junwei},
-  journal={TPAMI},
-  year={2022}
-}
-```
-
-
-## download SODA-A dataset
+## Download SODA-A dataset
 
 The SODA-A dataset can be downloaded from [here](https://shaunyuan22.github.io/SODA/).
 
@@ -40,7 +28,7 @@ mmrotate
 │   │   │   ├── test
 ```
 
-## split SODA-A dataset
+## Split SODA-A dataset
 
 The original images will be cropped to 800\*800 patches with the stride of 150.
 
@@ -48,9 +36,39 @@ The original images will be cropped to 800\*800 patches with the stride of 150.
 python tools/data/sodaa/sodaa_split.py --base-json sodaa_train.json 
 ```
 
-This script is forded from [BboxToolkit](https://github.com/jbwang1997/BboxToolkit), more details please refer to the project page.
+Please change `img_dirs`, `ann_dirs` and `save_dir` in json files before run the script. This script is forked from [BboxToolkit](https://github.com/jbwang1997/BboxToolkit), more details please refer to the project page.
 
-## change configurations in split json files
+## About evaluation
 
-Please change `img_dirs`, `ann_dirs` and `save_dir` in json files before run the script.
+With regard to the evaluation, we'd like to bring two important points to your attention:
+ - The evaluation is performed on the original images (**NOT ON** the splitted images).
+ - The `ignore` regions will not be used in the evaluation phase.
 
+Hence you need to filter `ignore` annotations of the original json files in the rawData directory (i.e., `AnnsWithIgnore`) to get available json files stored in `Annotations` for final performance evaluation. Finally, you may have the following folder sturcture:
+
+```none
+SODA-A
+├── rawData
+│   ├── train
+│   │   ├── Images
+│   │   ├── Annotations
+│   │   ├── AnnsWithIgnore
+│   ├── val
+│   │   ├── Images
+│   │   ├── Annotations
+│   │   ├── AnnsWithIgnore
+│   ├── test
+│   │   ├── Images
+│   │   ├── Annotations
+│   │   ├── AnnsWithIgnore
+├── divData
+│   ├── train
+│   │   ├── Images
+│   │   ├── Annotations
+│   ├── val
+│   │   ├── Images
+│   │   ├── Annotations
+│   ├── test
+│   │   ├── Images
+│   │   ├── Annotations
+```
