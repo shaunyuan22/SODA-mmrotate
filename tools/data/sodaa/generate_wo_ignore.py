@@ -9,8 +9,8 @@ from tqdm import tqdm
 cwd = os.getcwd()
 modes = ['train', 'val', 'test']
 for mode in modes:
-    annWithIgnDir = osp.join(cwd, mode, 'AnnsWithIgnore')
-    annDir = osp.join(cwd, mode, 'Annotations')
+    annWithIgnDir = osp.join(cwd, mode, 'Annotations')
+    annDir = osp.join(cwd, mode, 'AnnsWoIgnore')
     os.mkdir(annDir)
 
     for file in tqdm(sorted(os.listdir(annWithIgnDir)), ncols=120):
