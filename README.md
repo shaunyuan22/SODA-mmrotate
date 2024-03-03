@@ -5,7 +5,7 @@ This project is based on the open source object detection toolbox [MMRotate](htt
 The benchmark experiments work with **Python 3.8**, **PyTorch 1.10** and **mmrotate 0.3.0**, and corresponding configs can be found at `sodaa-benchmarks`. 
 
 ## Data preparation
-Please refer to `tools/data/sodaa` for more details.
+Please refer to [tools/data/sodaa](https://github.com/shaunyuan22/SODA-mmrotate/tree/main/tools/data/sodaa) for more details.
 
 ## Citation
 
