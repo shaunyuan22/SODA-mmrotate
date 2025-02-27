@@ -1,4 +1,4 @@
-## Introduction
+A## Introduction
 
 This project is based on the open source object detection toolbox [MMRotate](https://github.com/open-mmlab/mmrotate), please refer to [Installation](https://mmrotate.readthedocs.io/en/latest/install.html) for installation instructions first.
 
@@ -8,7 +8,7 @@ The benchmark experiments work with **Python 3.8**, **PyTorch 1.10** and **mmrot
 Please refer to [tools/data/sodaa](https://github.com/shaunyuan22/SODA-mmrotate/tree/main/tools/data/sodaa) for more details.
 
  ## **License**
-Our SODA-D dataset is licensed under [**CC BY-NC 4.0**](https://creativecommons.org/licenses/by-nc/4.0/), which means it is freely available for **academic use only**, and any **commercial use is prohibited**.
+Our SODA-A dataset is licensed under [**CC BY-NC 4.0**](https://creativecommons.org/licenses/by-nc/4.0/), which means it is freely available for **academic use only**, and any **commercial use is prohibited**.
 
 ## Citation
 
