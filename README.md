@@ -1,13 +1,15 @@
 ## Update
 The evaluation codes are updated, which now support multi-processing and multi-GPU parallelism and significantly boosts the evaluation efficiency 🚀
+
 For intuitive comparison, we show the overall time cost before and after applying the updated evaluation script as follows.
-| Steps | Before | After |
+| Step | Before | After |
 |:--------------------:|:----------:|:----------:|
 | Merge | ~20m | 25s |
 | IoU Calculation | ~1h30m | ~105s  |
 | Per Image Evaluation | ~2h20m  | ~135s |
 | Accumulation | ~17s | ~17s |
 | Overall| ~4h40m | ~280s  |
+
 The results are tested on four RTX2080Ti GPUs with Rotated FCOS.
 
 ## Introduction
