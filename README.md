@@ -4,7 +4,7 @@ The evaluation codes are updated, which now support multi-processing and multi-G
 For intuitive comparison, we show the overall time cost before and after applying the updated evaluation script as follows.
 | Step | Before | After |
 |:--------------------:|:----------:|:----------:|
-| Merge | ~20m | 25s |
+| Merge | ~20m | ~25s |
 | IoU Calculation | ~1h30m | ~105s  |
 | Per Image Evaluation | ~2h20m  | ~135s |
 | Accumulation | ~17s | ~17s |
