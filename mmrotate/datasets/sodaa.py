@@ -15,6 +15,8 @@ import numpy as np
 from collections import defaultdict
 from functools import partial
 from multiprocessing import Pool
+import torch.multiprocessing as mp
+from tqdm import tqdm
 from mmcv.utils import print_log
 from terminaltables import AsciiTable
 
@@ -24,7 +26,6 @@ from mmdet.datasets.custom import CustomDataset
 from mmcv.ops.nms import nms_rotated
 
 from mmrotate.core import poly2obb_np
-from mmrotate.core.evaluation import eval_rbbox_map
 from .sodaa_eval.sodaa_eval import SODAAeval
 import cv2
 
@@ -33,14 +34,13 @@ import cv2
 class SODAADataset(CustomDataset):
     CLASSES = ('airplane', 'helicopter', 'small-vehicle', 'large-vehicle',
                'ship', 'container', 'storage-tank', 'swimming-pool',
-               'windmill')  # only foreground categories available
+               'windmill')  # foreground categories only
     def __init__(self,
+                 version,
                  ori_ann_file,
-                 angle_version = 'le90',
                  **kwargs):
-        self.angle_version = angle_version
+        self.version = version
         super(SODAADataset, self).__init__(**kwargs)
-        # self.ori_infos = self.load_ori_annotations(ori_ann_file)
         self.ori_data_infos = self.load_ori_annotations(ori_ann_file)
         self.cat_ids = self._get_cat_ids()
 
@@ -83,7 +83,7 @@ class SODAADataset(CustomDataset):
                 if len(poly) > 8:
                     continue    # neglect those objects annotated with more than 8 polygons
                 try:
-                    x, y, w, h, a = poly2obb_np(poly, self.angle_version)
+                    x, y, w, h, a = poly2obb_np(poly, self.version)
                 except:  # noqa: E722
                     continue
                 label = int(ann['category_id'])  # 0-index
@@ -167,7 +167,7 @@ class SODAADataset(CustomDataset):
             for ann in annotations:
                 poly = np.array(ann['poly'], dtype=np.float32)
                 try:
-                    x, y, w, h, a = poly2obb_np(poly, self.angle_version)
+                    x, y, w, h, a = poly2obb_np(poly, self.version)
                 except:  # noqa: E722
                     continue
                 label = int(ann['cat_id'])  # 0-index
@@ -250,138 +250,6 @@ class SODAADataset(CustomDataset):
         ar = recalls.mean(axis=1)
         return ar
 
-    def translate(self, bboxes, x, y):
-        translated = bboxes.copy()
-        translated[..., :2] = translated[..., :2] + \
-                              np.array([x, y], dtype=np.float32)
-        return translated
-
-
-    def merge_det(self,
-                  results,
-                  with_merge=True,
-                  nms_iou_thr=0.5,
-                  nproc=10,
-                  save_dir=None,
-                  **kwargs):
-        if mmcv.is_list_of(results, tuple):
-            dets, segms = results
-        else:
-            dets = results
-
-        # get patch results for evaluating
-        if not with_merge:
-            results = [(data_info['id'], result)
-                       for data_info, result in zip(self.data_infos, results)]
-            # TODO:
-            if save_dir is not None:
-                pass
-            return  results
-
-        print('\n>>> Merge detected results of patch for whole image evaluating...')
-        start_time = time.time()
-        collector = defaultdict(list)
-        # ensure data_infos and dets have the same length
-        for data_info, result in zip(self.data_infos, dets):
-            filename = data_info['filename']
-            x_start, y_start = \
-                int(filename.split('___')[0].split('__')[-1]), \
-                int(filename.split('___')[-1].split('.')[0])
-            ori_name = filename.split('__')[0]
-            # x_start, y_start = data_info['start_coord']
-            new_result = []
-            for i, res in enumerate(result):
-                bboxes, scores = res[:, :-1], res[:, [-1]]
-                bboxes = self.translate(bboxes, x_start, y_start)
-                labels = np.zeros((bboxes.shape[0], 1)) + i
-                new_result.append(np.concatenate(
-                    [labels, bboxes, scores], axis=1
-                ))
-
-            new_result = np.concatenate(new_result, axis=0)
-            collector[ori_name].append(new_result)
-
-        merge_func = partial(_merge_func, CLASSES=self.CLASSES, iou_thr=nms_iou_thr)
-        if nproc > 1:
-            pool = Pool(nproc)
-            merged_results = pool.map(merge_func, list(collector.items()))
-            pool.close()
-        else:
-            merged_results = list(map(merge_func, list(collector.items())))
-
-        # TODO:
-        if save_dir is not None:
-            pass
-
-        stop_time = time.time()
-        print('Merge results completed, it costs %.1f seconds.'%(stop_time - start_time))
-        return merged_results
-
-    def merge_det_dota(self, results, nproc=4):
-        """Merging patch bboxes into full image.
-
-        Args:
-            results (list): Testing results of the dataset.
-            nproc (int): number of process. Default: 4.
-        """
-        print('\n>>> Merge detected results of patch for whole image evaluating...')
-        collector = defaultdict(list)
-        for data_info, result in zip(self.data_infos, results):
-            filename = data_info['filename']
-            x_start, y_start = \
-                int(filename.split('___')[0].split('__')[-1]), \
-                int(filename.split('___')[-1].split('.')[0])
-            ori_name = filename.split('__')[0]
-            new_result = []
-            for i, res in enumerate(result):
-                bboxes, scores = res[:, :-1], res[:, [-1]]
-                bboxes = bt.translate(bboxes, x_start, y_start)
-                labels = np.zeros((bboxes.shape[0], 1)) + i
-                new_result.append(np.concatenate(
-                    [labels, bboxes, scores], axis=1
-                ))
-
-            new_result = np.concatenate(new_result, axis=0)
-            collector[ori_name].append(new_result)
-
-        merge_func = partial(_merge_func, CLASSES=self.CLASSES, iou_thr=0.1)
-        if nproc <= 1:
-            print('Single processing')
-            merged_results = mmcv.track_iter_progress(
-                (map(merge_func, collector.items()), len(collector)))
-        else:
-            print('Multiple processing')
-            merged_results = mmcv.track_parallel_progress(
-                merge_func, list(collector.items()), nproc)
-        return merged_results
-
-    def poly2obb(self, poly):
-        """Convert polygons to oriented bounding boxes.
-
-        Args:
-            polys (ndarray): [x0,y0,x1,y1,x2,y2,x3,y3]
-
-        Returns:
-            obbs (ndarray): [x_ctr,y_ctr,w,h,angle]
-        """
-        bboxps = np.array(poly).reshape((4, 2))
-        rbbox = cv2.minAreaRect(bboxps)
-        x, y, w, h, a = rbbox[0][0], rbbox[0][1], rbbox[1][0], rbbox[1][1], rbbox[
-            2]
-        # if w < 2 or h < 2:
-        #     return
-        a = a / 180 * np.pi
-        if w < h:
-            w, h = h, w
-            a += np.pi / 2
-        while not np.pi / 2 > a >= -np.pi / 2:
-            if a >= np.pi / 2:
-                a -= np.pi
-            else:
-                a += np.pi
-        assert np.pi / 2 > a >= -np.pi / 2
-        return x, y, w, h, a
-
     def evaluate(self,
                  results,
                  metric='mAP',
@@ -409,6 +277,7 @@ class SODAADataset(CustomDataset):
             nproc (int): Processes used for computing TP and FP.
                 Default: 4.
         """
+        nproc = 4
         merged_results = self.merge_det(results, nproc=nproc)
         merge_idx = [self.ori_img_ids.index(res[0]) for res in merged_results]
         results = [res[1] for res in merged_results]    # exclude `id` for evaluation
@@ -480,6 +349,11 @@ class SODAADataset(CustomDataset):
             table_data = [headers]
             table_data += [result for result in results_2d]
             table = AsciiTable(table_data)
+            txtFile = open(txtPth, 'a+')
+            txtFile.writelines(f"\n{'-' * 30}Class-wise Evaluation{'-' * 30}\n")
+            txtFile.writelines(table.table)
+            txtFile.writelines("\n")
+            txtFile.close()
             print_log('\n' + table.table, logger=logger)
 
         # TODO: proposal evaluation
@@ -503,53 +377,152 @@ class SODAADataset(CustomDataset):
         )
         return eval_results
 
+    def translate(self, bboxes, x, y):
+        translated = bboxes.copy()
+        translated[..., :2] = translated[..., :2] + \
+                              np.array([x, y], dtype=np.float32)
+        return translated
 
-def _merge_func(info, CLASSES, iou_thr):
-    img_id, label_dets = info
-    print(img_id)
-    label_dets = np.concatenate(label_dets, axis=0)
-    labels, dets = label_dets[:, 0], label_dets[:, 1:]
+    def merge_det(self,
+                  results,
+                  with_merge=True,
+                  nms_iou_thr=0.5,
+                  nproc=10,
+                  save_dir=None,
+                  **kwargs):
+        if mmcv.is_list_of(results, tuple):
+            dets, segms = results
+        else:
+            dets = results
 
-    ori_img_results = []
-    for i in range(len(CLASSES)):
-        cls_dets = dets[labels == i]
-        if len(cls_dets) == 0:
-            ori_img_results.append(np.empty((0, dets.shape[1]), dtype=np.float32))
-            continue
-        bboxes, scores = cls_dets[:, :-1], cls_dets[:, [-1]]
-        bboxes = torch.from_numpy(bboxes).to(torch.float32).contiguous()
-        scores = torch.from_numpy(np.squeeze(scores, 1)).to(torch.float32).contiguous()
-        results, inds = nms_rotated(bboxes, scores, iou_thr)
-        # If scores.shape=(N, 1) instead of (N, ), then the results after NMS
-        # will be wrong. Suppose bboxes.shape=[N, 4], the results has shape
-        # of [N**2, 5],
-        results = results.numpy()
-        ori_img_results.append(results)
-    return img_id, ori_img_results
+        if not with_merge:
+            results = [(data_info['id'], result)
+                       for data_info, result in zip(self.data_infos, results)]
+            if save_dir is not None:
+                pass  # TODO:
+            return results
 
+        if mp.get_start_method(allow_none=True) != 'spawn':
+            print("INFO: Multiprocessing start method is not 'spawn'. Attempting to set it...")
+            try:
+                mp.set_start_method('spawn', force=True)
+                print("SUCCESS: Multiprocessing start method set to 'spawn'.")
+            except RuntimeError as e:
+                print(f"WARNING: Could not set start method to 'spawn': {e}")
+                print(
+                    "WARNING: This may lead to CUDA errors. Please consider setting it at the start of your main script.")
 
-def _merge_func_mm(info, CLASSES, iou_thr):
-    """Merging patch bboxes into full image.
+        print('\n>>> Merge detected results of patch for whole image evaluating...')
+        start_time = time.time()
 
-    Args:
-        CLASSES (list): Label category.
-        iou_thr (float): Threshold of IoU.
+        # Use a list to store intermediate results, then concatenate
+        collector = defaultdict(list)
+
+        # Pre-process detections for each patch
+        for data_info, result in tqdm(zip(self.data_infos, dets), total=len(self.data_infos),
+                                      desc="Collecting patch results"):
+            filename = data_info['filename']
+            # Improved file name parsing: Use a more robust split, or even better,
+            # store coordinates in `data_info` during data loading.
+            try:
+                parts = filename.split('___')
+                x_start, y_start = \
+                    int(parts[0].split('__')[-1]), \
+                    int(parts[-1].split('.')[0])
+                ori_name = filename.split('__')[0]
+            except IndexError:
+                print(f"Warning: Could not parse coordinates from filename: {filename}. Skipping.")
+                continue
+
+            # This part is optimized for better array concatenation
+            all_bboxes_for_patch = []
+            for i, res in enumerate(result):
+                if res.size > 0:
+                    bboxes, scores = res[:, :-1], res[:, [-1]]
+                    bboxes = self.translate(bboxes, x_start, y_start)
+                    labels = np.full((bboxes.shape[0], 1), i, dtype=np.float32)
+                    all_bboxes_for_patch.append(np.concatenate(
+                        [labels, bboxes, scores], axis=1
+                    ))
+
+            if all_bboxes_for_patch:
+                new_result = np.concatenate(all_bboxes_for_patch, axis=0)
+                collector[ori_name].append(new_result)
+
+        # NMS device is default to 'cuda:0' otherwise 'cpu'
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        print(f"Using device for NMS: {device}")
+
+        # Use functools.partial for better function wrapping
+        merge_func = partial(merge_function, CLASSES=self.CLASSES, iou_thr=nms_iou_thr, device=device)
+
+        # Process results in parallel or sequentially
+        if nproc > 1:
+            try:
+                with Pool(nproc) as pool:
+                    merged_results = pool.map(merge_func, list(collector.items()))
+            except Exception as e:
+                print(f"Error during multiprocessing: {e}. Falling back to sequential processing.")
+                merged_results = list(map(merge_func, list(collector.items())))
+        else:
+            merged_results = list(map(merge_func, list(collector.items())))
+
+        if save_dir is not None:
+            pass
+
+        stop_time = time.time()
+        print('Merge results completed, it costs %.1f seconds.' % (stop_time - start_time))
+        return merged_results
+
+def merge_function(info, CLASSES, iou_thr, device='cpu'):
+    """
+    Merging function for a single image  with GPU support
     """
     img_id, label_dets = info
+    # Concatenate all detection results for the current image in one go
     label_dets = np.concatenate(label_dets, axis=0)
 
-    labels, dets = label_dets[:, 0], label_dets[:, 1:]
+    if len(label_dets) == 0:
+        return img_id, [np.empty((0, 5), dtype=np.float32) for _ in CLASSES]
 
-    big_img_results = []
+    # Extract labels and detections
+    labels = label_dets[:, 0]
+    dets = label_dets[:, 1:]
+
+    ori_img_results = []
+
+    # Convert numpy arrays to torch tensors once, and move to device
+    all_bboxes = torch.from_numpy(dets[:, :-1]).to(device).contiguous()
+    all_scores = torch.from_numpy(dets[:, -1]).to(device).contiguous()
+    all_labels = torch.from_numpy(labels).to(device).to(torch.int64)
+
+    # Sanity check for bounding box format
+    if all_bboxes.shape[1] == 4:
+        print("Warning: Bounding box format is (N, 4). `nms_rotated` expects (N, 5).")
+        pass
+    elif all_bboxes.shape[1] == 5:
+        pass
+    else:
+        raise ValueError(f"Unsupported bounding box shape: {all_bboxes.shape[1]}")
+
     for i in range(len(CLASSES)):
-        if len(dets[labels == i]) == 0:
-            big_img_results.append(dets[labels == i])
-        else:
-            try:
-                cls_dets = torch.from_numpy(dets[labels == i]).cuda()
-            except:  # noqa: E722
-                cls_dets = torch.from_numpy(dets[labels == i])
-            nms_dets, keep_inds = nms_rotated(cls_dets[:, :5], cls_dets[:, -1],
-                                              iou_thr)
-            big_img_results.append(nms_dets.cpu().numpy())
-    return img_id, big_img_results
+        # Filter detections for the current class efficiently using boolean indexing
+        cls_mask = (all_labels == i)
+
+        # If no detections for this class, add an empty array
+        if not torch.any(cls_mask):
+            ori_img_results.append(np.empty((0, dets.shape[1]), dtype=np.float32))
+            continue
+
+        cls_bboxes = all_bboxes[cls_mask]
+        cls_scores = all_scores[cls_mask]
+
+        # Apply NMS on the selected detections using the MMCV CUDA operator
+        # This is where the major speed-up comes from.
+        results, inds = nms_rotated(cls_bboxes, cls_scores, iou_thr)
+
+        # Move results back to CPU and convert to numpy for returning
+        results_np = results.cpu().numpy()
+        ori_img_results.append(results_np)
+
+    return img_id, ori_img_results
