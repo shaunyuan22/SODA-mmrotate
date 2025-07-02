@@ -1,22 +1,87 @@
-__author__ = 'tsungyi'
+#==============================================================================================
+#
+# Author: shaunyuan (shaunyuan@mail.nwpu.edu.cn)
+#
+# Description:
+#     The official evaluation script for SODA-A dataset, which originates from COCO evaluator.
+#     This tool enhances the official COCO evaluation script by introducing multi-processing
+#     and multi-GPU parallelism. This results in a dramatic speedup for the evaluation process,
+#     particularly when dealing with images containing a high density of instances.
+#
+#==============================================================================================
+# Note:
+#     This project depends on the third-library: mmcv
+#==============================================================================================
+
+
+__author__ = 'shaunyuan (shaunyuan@mail.nwpu.edu.cn)'
 
 import copy
 import datetime
 import time
+from tqdm import tqdm
 from collections import defaultdict
-
-from multiprocessing import Pool
+from multiprocessing import Pool, Manager
+import multiprocessing as mp
 from functools import partial
 
 import numpy as np
 import torch
-
 from mmcv.ops import box_iou_rotated
 
 
+def init_worker_with_counter(counter, devices_list):
+    global worker_device
+    worker_id = counter.value
+    counter.value += 1
+
+    worker_device = devices_list[worker_id % len(devices_list)]
+
+
+def top_level_compute_iou_worker(args):
+    global worker_device
+    device = worker_device
+
+    imgId, catId, gts_data, dts_data, params_dict = args
+
+    gt = gts_data.get((imgId, catId), [])
+    dt = dts_data.get((imgId, catId), [])
+
+    if len(gt) == 0 or len(dt) == 0:
+        return (imgId, catId, np.empty((0, 0), dtype=np.float32))
+
+    scores_tensor = torch.as_tensor([d['score'] for d in dt], device=device)
+
+    inds = torch.argsort(scores_tensor, descending=True)
+
+    max_dets = params_dict['maxDets'][-1]
+    if len(inds) > max_dets:
+        inds = inds[:max_dets]
+
+    if inds.numel() == 0:
+        return (imgId, catId, np.empty((0, 0), dtype=np.float32))
+
+    inds_np = np.argsort([-d['score'] for d in dt], kind='mergesort')
+    dt = [dt[i] for i in inds_np]
+    if len(dt) > max_dets:
+        dt = dt[0:max_dets]
+        inds_np = inds_np[0:max_dets]
+
+    g_boxes = torch.tensor([g['bbox'] for g in gt], dtype=torch.float32, device=device)
+    d_boxes = torch.tensor([d['bbox'] for d in dt], dtype=torch.float32, device=device)
+
+    ious_tensor = box_iou_rotated(d_boxes, g_boxes)
+    ious_np = ious_tensor.cpu().numpy()
+
+    full_ious_np = np.zeros((len(dts_data.get((imgId, catId), [])), len(gt)), dtype=np.float32)
+    full_ious_np[inds_np, :] = ious_np
+
+    return (imgId, catId, full_ious_np)
+
+
 class SODAAeval:
-    # Interface for evaluating detection on the SODA-A dataset. This evaluation code
-    # originates from COCO dataset.
+    # Interface for evaluating detection on the SODA-A dataset.
+    # This evaluation code originates from COCO dataset.
     #
     # The usage for CocoEval is as follows:
     #  sodaaGt=..., sodaaDt=...       # load dataset and results
@@ -65,7 +130,7 @@ class SODAAeval:
     # Data, paper, and tutorials available at:  http://mscoco.org/
     # Code written by Piotr Dollar and Tsung-Yi Lin, 2015.
     # Licensed under the Simplified BSD License [see coco/license.txt]
-    def __init__(self, annotations=None, results=None, numCats=9, iouType='mAP', nproc=10):
+    def __init__(self, annotations=None, results=None, numCats=9, iouType='mAP', nproc=4):
         '''
         Initialize CocoEval using coco APIs for gt and dt
         :param sodaaGt: coco object with ground truth annotations
@@ -151,209 +216,89 @@ class SODAAeval:
         self.eval = {}  # accumulated evaluation results
 
     def evaluate(self):
+        if mp.get_start_method(allow_none=True) != 'spawn':
+            print("INFO: Multiprocessing start method is not 'spawn'. Attempting to set it...")
+            try:
+                mp.set_start_method('spawn', force=True)
+                print("SUCCESS: Multiprocessing start method set to 'spawn'.")
+            except RuntimeError as e:
+                print(f"WARNING: Could not set start method to 'spawn': {e}")
+                print(
+                    "WARNING: This may lead to CUDA errors. Please consider setting it at the start of your main script.")
+
         '''
         Run per image evaluation on given images and store results
-         (a list of dict) in self.evalImgs
-        :return: None
         '''
-        # tic = time.time()
         p = self.params
         print('Evaluate annotation type *{}*'.format(p.iouType))
-        p.imgIds = list(np.unique(p.imgIds))
-        if p.useCats:
-            p.catIds = list(np.unique(p.catIds))
-        p.maxDets = sorted(p.maxDets)
-        self.params = p
 
         self._prepare()
-        # loop through images, area range, max detection number
         catIds = p.catIds if p.useCats else [-1]
 
-        if p.iouType == 'mAP':
-            computeIoU = self.computeIoU
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            num_gpus = torch.cuda.device_count()
+            devices_list = [f'cuda:{i}' for i in range(num_gpus)]
         else:
-            raise Exception('unknown iouType for iou computation')
+            devices_list = ['cpu']
+
+        print(f"Found {len(devices_list)} device(s): {devices_list}. Using {self.nproc} processes.")
+
         print('Calculating IoUs...')
         tic = time.time()
 
-        self.ious = {(imgId, catId): computeIoU(imgId, catId)
-                     for imgId in p.imgIds for catId in catIds}
+        img2catLst = [(imgId, catId) for imgId in p.imgIds for catId in catIds]
+        params_dict = {'maxDets': p.maxDets}
+
+        worker_args = [(imgId, catId, self._gts, self._dts, params_dict)
+                       for imgId, catId in img2catLst]
+
+        num_tasks = len(worker_args)
+
+        if self.nproc > 1:
+            with Manager() as manager:
+                counter = manager.Value('i', 0)
+                init_args = (counter, devices_list)
+
+                chunksize = (num_tasks + self.nproc - 1) // self.nproc
+                if chunksize == 0: chunksize = 1
+
+                print(f"Total tasks: {num_tasks}, Processes: {self.nproc}, Chunksize: {chunksize}")
+                print('Calculating IoUs...')
+
+                with Pool(self.nproc, initializer=init_worker_with_counter, initargs=init_args) as pool:
+                    pbar = tqdm(pool.imap_unordered(top_level_compute_iou_worker, worker_args, chunksize=chunksize),
+                                total=num_tasks,
+                                desc="IoU Calculation Progress")
+                    results = [r for r in pbar]
+
+        else:
+            global worker_device
+            worker_device = devices_list[0]
+            print('Calculating IoUs...')
+            results = [top_level_compute_iou_worker(arg) for arg in tqdm(worker_args, desc="IoU Calculation Progress")]
+
+        self.ious = {(r[0], r[1]): r[2] for r in results}
+
         toc = time.time()
         print('IoU calculation Done (t={:0.2f}s).'.format(toc - tic))
 
         print('Running per image evaluation...')
         tic = time.time()
-        evaluateImg = self.evaluateImgPartial if self.nproc else self.evaluateImg
         maxDet = p.maxDets[-1]
-        evaluateImgFunc = partial(evaluateImg)
-        inteLst = [[imgId, catId, areaRng, maxDet] for catId in catIds for areaRng in p.areaRng for imgId in p.imgIds]
-        imgIdLst, catIdLst, areaRngLst, maxDetLst = [], [], [], []
-        for lst in inteLst:
-            imgIdLst.append(lst[0])
-            catIdLst.append(lst[1])
-            areaRngLst.append(lst[2])
-            maxDetLst.append(lst[3])
 
-        if self.nproc > 1:
-            pool = Pool(self.nproc)
-            contents = pool.map(evaluateImgFunc,
-                                   zip(imgIdLst, catIdLst, areaRngLst, maxDetLst))
-            pool.close()
-        else:
-            contents = [evaluateImg(imgId, catId, areaRng, maxDet) for catId in catIds
-                        for areaRng in p.areaRng for imgId in p.imgIds]
+        contents = [self.evaluateImg(imgId, catId, areaRng, maxDet)
+                    for catId in catIds
+                    for areaRng in p.areaRng
+                    for imgId in p.imgIds]
+
         toc = time.time()
         print('DONE (t={:0.2f}s).'.format(toc - tic))
-        self.evalImgs = [c for c in contents]
+        self.evalImgs = contents
         self._paramsEval = copy.deepcopy(self.params)
-
-    def computeIoUPartial(self, args):
-        imgId, catId = args
-        p = self.params
-        if p.useCats:
-            gt = self._gts[imgId, catId]
-            dt = self._dts[imgId, catId]
-        else:
-            gt = [_ for cId in p.catIds for _ in self._gts[imgId, cId]]
-            dt = [_ for cId in p.catIds for _ in self._dts[imgId, cId]]
-        if len(gt) == 0 and len(dt) == 0:
-            return []
-        # sort dt highest score first
-        inds = np.argsort([-d['score'] for d in dt], kind='mergesort')
-        dt = [dt[i] for i in inds]
-        if len(dt) > p.maxDets[-1]:
-            dt = dt[0:p.maxDets[-1]]
-
-        if p.iouType == 'mAP':
-            g = [g['bbox'] for g in gt]
-            d = [d['bbox'] for d in dt]
-        else:
-            raise Exception('unknown iouType for iou computation')
-
-        # compute iou between each dt and gt region (rotated rectangle)
-        ious = box_iou_rotated(
-            torch.from_numpy(np.array(d)).float(),
-            torch.from_numpy(np.array(g)).float()).numpy()
-        return ious
-
-    def computeIoU(self, imgId, catId):
-        p = self.params
-        if p.useCats:
-            gt = self._gts[imgId, catId]
-            dt = self._dts[imgId, catId]
-        else:
-            gt = [_ for cId in p.catIds for _ in self._gts[imgId, cId]]
-            dt = [_ for cId in p.catIds for _ in self._dts[imgId, cId]]
-        if len(gt) == 0 and len(dt) == 0:
-            return []
-        # sort dt highest score first
-        inds = np.argsort([-d['score'] for d in dt], kind='mergesort')
-        dt = [dt[i] for i in inds]
-        if len(dt) > p.maxDets[-1]:
-            dt = dt[0:p.maxDets[-1]]
-
-        if p.iouType == 'mAP':
-            g = [g['bbox'] for g in gt]
-            d = [d['bbox'] for d in dt]
-        else:
-            raise Exception('unknown iouType for iou computation')
-
-        # compute iou between each dt and gt region (rotated rectangle)
-        ious = box_iou_rotated(
-            torch.from_numpy(np.array(d)).float(),
-            torch.from_numpy(np.array(g)).float()).numpy()
-        return ious
-
-
-    def evaluateImgPartial(self, args):
-        '''
-        perform evaluation for single category and image
-        :return: dict (single image results)
-        '''
-        imgId, catId, aRng, maxDet = args
-        p = self.params
-        if p.useCats:
-            gt = self._gts[imgId, catId]
-            dt = self._dts[imgId, catId]
-        else:
-            gt = [_ for cId in p.catIds for _ in self._gts[imgId, cId]]
-            dt = [_ for cId in p.catIds for _ in self._dts[imgId, cId]]
-        if len(gt) == 0 and len(dt) == 0:
-            return None
-
-        # TODO: all to 0
-        for g in gt:
-            if g['ignore'] or (g['area'] < aRng[0] or g['area'] > aRng[1]):
-                g['_ignore'] = 1
-            else:
-                g['_ignore'] = 0
-
-        # sort dt highest score first, sort gt ignore last
-        gtind = np.argsort([g['_ignore'] for g in gt], kind='mergesort')
-        gt = [gt[i] for i in gtind]
-        dtind = np.argsort([-d['score'] for d in dt], kind='mergesort')
-        dt = [dt[i] for i in dtind[0:maxDet]]
-        iscrowd = [0 for o in gt]   # [int(o['iscrowd']) for o in gt]
-        # load computed ious
-        ious = self.ious[imgId, catId][:, gtind] if len(
-            self.ious[imgId, catId]) > 0 else self.ious[imgId, catId]
-
-        T = len(p.iouThrs)
-        G = len(gt)
-        D = len(dt)
-        gtm = np.zeros((T, G))
-        dtm = np.zeros((T, D))
-        gtIg = np.array([g['_ignore'] for g in gt])
-        dtIg = np.zeros((T, D))
-        if not len(ious) == 0:
-            for tind, t in enumerate(p.iouThrs):
-                for dind, d in enumerate(dt):
-                    # information about best match so far (m=-1 -> unmatched)
-                    iou = min([t, 1 - 1e-10])
-                    m = -1
-                    for gind, g in enumerate(gt):
-                        # if this gt already matched, and not a crowd, continue
-                        if gtm[tind, gind] > 0 and not iscrowd[gind]:
-                            continue
-                        # if dt matched to reg gt, and on ignore gt, stop
-                        if m > -1 and gtIg[m] == 0 and gtIg[gind] == 1:
-                            break
-                        # continue to next gt unless better match made
-                        if ious[dind, gind] < iou:
-                            continue
-                        # if match successful and best so far, store
-                        # appropriately
-                        iou = ious[dind, gind]
-                        m = gind
-                    # if match made store id of match for both dt and gt
-                    if m == -1:
-                        continue
-                    dtIg[tind, dind] = gtIg[m]
-                    dtm[tind, dind] = gt[m]['id']
-                    gtm[tind, m] = d['id']
-        # set unmatched detections outside of area range to ignore
-        a = np.array([d['area'] < aRng[0] or d['area'] > aRng[1]
-                      for d in dt]).reshape((1, len(dt)))
-        dtIg = np.logical_or(dtIg, np.logical_and(dtm == 0, np.repeat(a, T,
-                                                                      0)))
-        # store results for given image and category
-        return {
-            'image_id': imgId,
-            'category_id': catId,
-            'aRng': aRng,
-            'maxDet': maxDet,
-            'dtIds': [d['id'] for d in dt],
-            'gtIds': [g['id'] for g in gt],
-            'dtMatches': dtm,
-            'gtMatches': gtm,
-            'dtScores': [d['score'] for d in dt],
-            'gtIgnore': gtIg,
-            'dtIgnore': dtIg,
-        }
 
     def evaluateImg(self, imgId, catId, aRng, maxDet):
         '''
-        perform evaluation for single category and image
+        Perform evaluation for single category and image using vectorized logic.
         :return: dict (single image results)
         '''
         p = self.params
@@ -363,66 +308,62 @@ class SODAAeval:
         else:
             gt = [_ for cId in p.catIds for _ in self._gts[imgId, cId]]
             dt = [_ for cId in p.catIds for _ in self._dts[imgId, cId]]
+
         if len(gt) == 0 and len(dt) == 0:
             return None
 
-        # TODO: all to 0
         for g in gt:
             if g['ignore'] or (g['area'] < aRng[0] or g['area'] > aRng[1]):
                 g['_ignore'] = 1
             else:
                 g['_ignore'] = 0
 
-        # sort dt highest score first, sort gt ignore last
         gtind = np.argsort([g['_ignore'] for g in gt], kind='mergesort')
         gt = [gt[i] for i in gtind]
+        gtIg = np.array([g['_ignore'] for g in gt])  # gt ignore flags
+
         dtind = np.argsort([-d['score'] for d in dt], kind='mergesort')
         dt = [dt[i] for i in dtind[0:maxDet]]
-        iscrowd = [0 for o in gt]   # [int(o['iscrowd']) for o in gt]
-        # load computed ious
-        ious = self.ious[imgId, catId][:, gtind] if len(
-            self.ious[imgId, catId]) > 0 else self.ious[imgId, catId]
+        dtScores = np.array([d['score'] for d in dt])
+
+        iscrowd = [0 for o in gt]
 
         T = len(p.iouThrs)
         G = len(gt)
         D = len(dt)
-        gtm = np.zeros((T, G))
-        dtm = np.zeros((T, D))
-        gtIg = np.array([g['_ignore'] for g in gt])
-        dtIg = np.zeros((T, D))
-        if not len(ious) == 0:
+
+        gtm = np.zeros((T, G))  # ground truth matches
+        dtm = np.zeros((T, D))  # detection matches
+        dtIg = np.zeros((T, D))  # detection ignore
+
+        if D > 0 and G > 0:
+            ious = self.ious[imgId, catId][dtind[0:maxDet], :][:, gtind]
+
+            gt_idx_for_dt = ious.argmax(axis=1)  # (D,) a gt index for each dt
+            gt_iou_for_dt = ious.max(axis=1)  # (D,) the iou value
+
             for tind, t in enumerate(p.iouThrs):
                 for dind, d in enumerate(dt):
-                    # information about best match so far (m=-1 -> unmatched)
-                    iou = min([t, 1 - 1e-10])
-                    m = -1
-                    for gind, g in enumerate(gt):
-                        # if this gt already matched, and not a crowd, continue
-                        if gtm[tind, gind] > 0 and not iscrowd[gind]:
-                            continue
-                        # if dt matched to reg gt, and on ignore gt, stop
-                        if m > -1 and gtIg[m] == 0 and gtIg[gind] == 1:
-                            break
-                        # continue to next gt unless better match made
-                        if ious[dind, gind] < iou:
-                            continue
-                        # if match successful and best so far, store
-                        # appropriately
-                        iou = ious[dind, gind]
-                        m = gind
-                    # if match made store id of match for both dt and gt
-                    if m == -1:
-                        continue
-                    dtIg[tind, dind] = gtIg[m]
-                    dtm[tind, dind] = gt[m]['id']
-                    gtm[tind, m] = d['id']
-        # set unmatched detections outside of area range to ignore
-        a = np.array([d['area'] < aRng[0] or d['area'] > aRng[1]
-                      for d in dt]).reshape((1, len(dt)))
-        dtIg = np.logical_or(dtIg, np.logical_and(dtm == 0, np.repeat(a, T,
-                                                                      0)))
+                    iou = gt_iou_for_dt[dind]
+                    gind = gt_idx_for_dt[dind]
 
-        # store results for given image and category
+                    if iou < t:
+                        continue
+
+                    if gtm[tind, gind] > 0:
+                        continue
+
+                    if iscrowd[gind]:
+                        continue
+
+                    gtm[tind, gind] = d['id']
+                    dtm[tind, dind] = gt[gind]['id']
+                    dtIg[tind, dind] = gtIg[gind]
+
+        a = np.array([d['area'] < aRng[0] or d['area'] > aRng[1] for d in dt]).reshape((1, D))
+        dtIg = np.logical_or(dtIg, np.logical_and(dtm == 0, np.repeat(a, T, 0)))
+
+        # store results
         return {
             'image_id': imgId,
             'category_id': catId,
@@ -596,6 +537,12 @@ class SODAAeval:
                 mean_s = -1
             else:
                 mean_s = np.mean(s[s > -1])
+            txtPth = "./work_dirs/evalRes.txt"
+            txtFile = open(txtPth, 'a+')
+            txtFile.writelines(iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets,
+                                           mean_s))
+            txtFile.writelines('\n')
+            txtFile.close()
             print(
                 iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets,
                             mean_s))
@@ -691,3 +638,4 @@ class SODAAParams:
                         [20 ** 2, 32 ** 2], [32 ** 2, 40 * 50]]
         self.areaRngLbl = ['Small', 'eS', 'rS', 'gS', 'Normal']
         self.useCats = 1
+
