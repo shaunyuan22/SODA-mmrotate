@@ -1,4 +1,4 @@
-## Update
+## :star2::star2:Update:star2::star2:
 We **STRONGLY** recommend updating the evaluation codes ([sodaa.py](https://github.com/shaunyuan22/SODA-mmrotate/blob/main/mmrotate/datasets/sodaa.py) and [sodaa_eval.py](https://github.com/shaunyuan22/SODA-mmrotate/blob/main/mmrotate/datasets/sodaa_eval/sodaa_eval.py)), which now support multi-processing and multi-GPU parallelism and significantly boosts the evaluation efficiency 🚀
 
 For intuitive comparison, we show the overall time cost before and after applying the updated evaluation script as follows.
