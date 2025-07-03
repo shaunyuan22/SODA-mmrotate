@@ -30,55 +30,6 @@ import torch
 from mmcv.ops import box_iou_rotated
 
 
-def init_worker_with_counter(counter, devices_list):
-    global worker_device
-    worker_id = counter.value
-    counter.value += 1
-
-    worker_device = devices_list[worker_id % len(devices_list)]
-
-
-def top_level_compute_iou_worker(args):
-    global worker_device
-    device = worker_device
-
-    imgId, catId, gts_data, dts_data, params_dict = args
-
-    gt = gts_data.get((imgId, catId), [])
-    dt = dts_data.get((imgId, catId), [])
-
-    if len(gt) == 0 or len(dt) == 0:
-        return (imgId, catId, np.empty((0, 0), dtype=np.float32))
-
-    scores_tensor = torch.as_tensor([d['score'] for d in dt], device=device)
-
-    inds = torch.argsort(scores_tensor, descending=True)
-
-    max_dets = params_dict['maxDets'][-1]
-    if len(inds) > max_dets:
-        inds = inds[:max_dets]
-
-    if inds.numel() == 0:
-        return (imgId, catId, np.empty((0, 0), dtype=np.float32))
-
-    inds_np = np.argsort([-d['score'] for d in dt], kind='mergesort')
-    dt = [dt[i] for i in inds_np]
-    if len(dt) > max_dets:
-        dt = dt[0:max_dets]
-        inds_np = inds_np[0:max_dets]
-
-    g_boxes = torch.tensor([g['bbox'] for g in gt], dtype=torch.float32, device=device)
-    d_boxes = torch.tensor([d['bbox'] for d in dt], dtype=torch.float32, device=device)
-
-    ious_tensor = box_iou_rotated(d_boxes, g_boxes)
-    ious_np = ious_tensor.cpu().numpy()
-
-    full_ious_np = np.zeros((len(dts_data.get((imgId, catId), [])), len(gt)), dtype=np.float32)
-    full_ious_np[inds_np, :] = ious_np
-
-    return (imgId, catId, full_ious_np)
-
-
 class SODAAeval:
     # Interface for evaluating detection on the SODA-A dataset.
     # This evaluation code originates from COCO dataset.
@@ -638,4 +589,53 @@ class SODAAParams:
                         [20 ** 2, 32 ** 2], [32 ** 2, 40 * 50]]
         self.areaRngLbl = ['Small', 'eS', 'rS', 'gS', 'Normal']
         self.useCats = 1
+
+
+def init_worker_with_counter(counter, devices_list):
+    global worker_device
+    worker_id = counter.value
+    counter.value += 1
+
+    worker_device = devices_list[worker_id % len(devices_list)]
+
+
+def top_level_compute_iou_worker(args):
+    global worker_device
+    device = worker_device
+
+    imgId, catId, gts_data, dts_data, params_dict = args
+
+    gt = gts_data.get((imgId, catId), [])
+    dt = dts_data.get((imgId, catId), [])
+
+    if len(gt) == 0 or len(dt) == 0:
+        return (imgId, catId, np.empty((0, 0), dtype=np.float32))
+
+    scores_tensor = torch.as_tensor([d['score'] for d in dt], device=device)
+
+    inds = torch.argsort(scores_tensor, descending=True)
+
+    max_dets = params_dict['maxDets'][-1]
+    if len(inds) > max_dets:
+        inds = inds[:max_dets]
+
+    if inds.numel() == 0:
+        return (imgId, catId, np.empty((0, 0), dtype=np.float32))
+
+    inds_np = np.argsort([-d['score'] for d in dt], kind='mergesort')
+    dt = [dt[i] for i in inds_np]
+    if len(dt) > max_dets:
+        dt = dt[0:max_dets]
+        inds_np = inds_np[0:max_dets]
+
+    g_boxes = torch.tensor([g['bbox'] for g in gt], dtype=torch.float32, device=device)
+    d_boxes = torch.tensor([d['bbox'] for d in dt], dtype=torch.float32, device=device)
+
+    ious_tensor = box_iou_rotated(d_boxes, g_boxes)
+    ious_np = ious_tensor.cpu().numpy()
+
+    full_ious_np = np.zeros((len(dts_data.get((imgId, catId), [])), len(gt)), dtype=np.float32)
+    full_ious_np[inds_np, :] = ious_np
+
+    return (imgId, catId, full_ious_np)
 
